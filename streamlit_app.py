@@ -105,8 +105,13 @@ try:
     with col2:
         # Confidence distribution
         st.subheader("Confidence Distribution")
-        confidence_hist = pd.cut(filtered_df['Confidence'], bins=20).value_counts().sort_index()
-        st.bar_chart(confidence_hist)
+        # Create histogram with numeric bins
+        confidence_hist, bin_edges = pd.cut(filtered_df['Confidence'], bins=20, retbins=True)
+        confidence_counts = confidence_hist.value_counts().sort_index()
+        # Convert interval index to midpoints for plotting
+        bin_midpoints = [(interval.left + interval.right) / 2 for interval in confidence_counts.index]
+        chart_data = pd.Series(confidence_counts.values, index=bin_midpoints)
+        st.bar_chart(chart_data)
     
     # Time series analysis
     st.subheader("Identifications Over Time")
@@ -147,7 +152,7 @@ try:
     with col1:
         sort_by = st.selectbox(
             "Sort by",
-            options=['date', 'Confidence', 'Com_Name', 'Week'],
+            options=['Date', 'Confidence', 'Com_Name', 'Week'],
             index=0
         )
     with col2:
@@ -160,7 +165,7 @@ try:
     
     # Display table
     st.dataframe(
-        display_df[['date', 'time', 'Com_Name', 'Sci_Name', 'Confidence', 'Week']],
+        display_df[['Date', 'time', 'Com_Name', 'Sci_Name', 'Confidence', 'Week']],
         use_container_width=True,
         height=400
     )
@@ -192,4 +197,4 @@ try:
 
 except Exception as e:
     st.error(f"Error loading data: {str(e)}")
-    st.info("Please ensure 'birds.db' exists in the same directory and contains a 'birds' table with the required columns.")
+    st.info("Please ensure 'birds.db' exists in the same directory and contains a 'detections' table with the required columns.")
