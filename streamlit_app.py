@@ -11,61 +11,49 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- MOCK DATA GENERATION ---
-# This section provides mock data for the application to run in environments 
-# where 'birds.db' is not accessible. In a real environment, this can be removed.
-def generate_mock_data(n_rows=1500):
-    """Generates mock data for bird detections."""
-    
-    # Create a date range spanning 6 months
-    start_date = datetime(2024, 6, 1)
-    end_date = datetime(2024, 11, 30)
-    dates = pd.to_datetime(pd.date_range(start=start_date, end=end_date, periods=n_rows))
-    
-    species_list = [
-        'Northern Cardinal', 'American Robin', 'Blue Jay', 'House Sparrow', 
-        'Mourning Dove', 'Black-capped Chickadee', 'Downy Woodpecker', 
-        'European Starling', 'Carolina Wren', 'Song Sparrow', 'Canada Goose'
-    ]
-    
-    data = {
-        'Date': dates.date, # Store as date object initially
-        'Time': dates.strftime('%H:%M:%S'),
-        # Assign species with a bias towards the top few
-        'Com_Name': np.random.choice(species_list, size=n_rows, p=[0.2, 0.15, 0.1, 0.1, 0.1, 0.08, 0.07, 0.07, 0.07, 0.04, 0.02]),
-        'Sci_Name': [f'SciName_{s.replace(" ", "_")}' for s in np.random.choice(species_list, size=n_rows)],
-        'Confidence': np.clip(np.random.normal(0.8, 0.15, n_rows), 0.01, 1.0)
-    }
-    df = pd.DataFrame(data)
-    return df
-# --- END MOCK DATA ---
-
 # --- 2. Database Connection and Data Loading ---
 @st.cache_data
 def load_data():
-    """Load data (using mock for demonstration) and preprocess time features."""
+    """
+    Load data from SQLite database ('birds.db') and preprocess time features.
+    Returns an empty DataFrame if the database connection fails.
+    """
     
-    # In a real environment, uncomment the following lines and remove the mock data generation
-    # try:
-    #     conn = sqlite3.connect('birds.db')
-    #     query = "SELECT * FROM detections"
-    #     df = pd.read_sql_query(query, conn)
-    #     conn.close()
-    # except sqlite3.OperationalError:
-    #     # If DB fails, use mock data as fallback or raise an error in a production setup
-    #     st.error("Could not find 'birds.db'. Using mock data for demonstration.")
-    #     df = generate_mock_data()
-    
-    df = generate_mock_data() # Using mock data for the environment
-    
-    # Ensure Date is a date object and create a combined datetime object
-    df['Date'] = pd.to_datetime(df['Date']).dt.date
-    df['DateTime'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Time'])
+    try:
+        # Establish connection and load all data from the 'detections' table
+        conn = sqlite3.connect('birds.db')
+        query = "SELECT * FROM detections"
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+    except sqlite3.OperationalError as e:
+        st.error(f"Database Error: Could not connect to 'birds.db' or load the 'detections' table. Details: {e}")
+        # Return an empty DataFrame on failure
+        return pd.DataFrame({
+            'Date': [], 'Time': [], 'Com_Name': [], 'Sci_Name': [], 'Confidence': [], 
+            'DateTime': [], 'Hour': [], 'DayName': [], 'Week': []
+        })
 
-    # Preprocess time features
-    df['Hour'] = df['DateTime'].dt.hour
-    df['DayName'] = df['DateTime'].dt.day_name()
-    df['Week'] = df['DateTime'].dt.isocalendar().week.astype(int) 
+    # Ensure all required columns are present before proceeding
+    required_cols = ['Date', 'Time', 'Com_Name', 'Sci_Name', 'Confidence']
+    if not all(col in df.columns for col in required_cols):
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        st.error(f"Database table 'detections' is missing required columns: {', '.join(missing_cols)}")
+        return pd.DataFrame() 
+
+    # --- Data Preprocessing ---
+    # Ensure Date is a date object and create a combined datetime object
+    try:
+        df['Date'] = pd.to_datetime(df['Date']).dt.date
+        df['DateTime'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Time'])
+
+        # Preprocess time features
+        df['Hour'] = df['DateTime'].dt.hour
+        df['DayName'] = df['DateTime'].dt.day_name()
+        # isocalendar().week returns the ISO week number
+        df['Week'] = df['DateTime'].dt.isocalendar().week.astype(int) 
+    except Exception as e:
+        st.error(f"Error during data preprocessing. Check that 'Date' and 'Time' columns are in valid formats. Details: {e}")
+        return pd.DataFrame()
     
     return df
 
@@ -81,6 +69,11 @@ try:
     # --- 4. Sidebar Filters ---
     st.sidebar.header("Filter Detections")
     
+    # Check if data loaded successfully before getting min/max dates
+    if df.empty:
+        # Stop execution if data loading failed (handled by load_data's error message)
+        st.stop()
+        
     min_date_global = df['Date'].min()
     max_date_global = df['Date'].max()
     
@@ -147,13 +140,19 @@ try:
         detection_days = filtered_df['Date'].nunique()
 
         # Calculate a simple delta for total detections (comparison against the 7-day period prior to the current selection)
-        comparison_end = filtered_df['Date'].min() - pd.Timedelta(days=1) if detection_days > 0 else df['Date'].min()
+        # Note: pd.Timedelta requires a full datetime object or conversion, which is fine here since df['Date'] contains Python date objects which can be subtracted from pd.Timedelta results after conversion.
+        current_min_date = pd.to_datetime(filtered_df['Date'].min())
+        comparison_end = current_min_date - pd.Timedelta(days=1) if detection_days > 0 else pd.to_datetime(df['Date'].min())
         comparison_start = comparison_end - pd.Timedelta(days=7)
         
-        previous_7_days_count = df[(df['Date'] > comparison_start) & (df['Date'] <= comparison_end)].shape[0]
+        
+        previous_7_days_count = df[
+            (pd.to_datetime(df['Date']) > comparison_start) & 
+            (pd.to_datetime(df['Date']) <= comparison_end)
+        ].shape[0]
         
         delta_str = None
-        if previous_7_days_count > 0:
+        if previous_7_days_count > 0 and total_detections > 0:
             change = ((total_detections - previous_7_days_count) / previous_7_days_count) * 100
             delta_str = f"{change:+.1f}% vs prior 7 days"
 
@@ -161,7 +160,7 @@ try:
             st.metric(
                 "Total Detections", 
                 total_detections,
-                delta=delta_str if delta_str and total_detections > 0 else None,
+                delta=delta_str if delta_str else None,
             )
         
         with col2:
@@ -291,5 +290,6 @@ try:
 
 # --- 7. Final Error Handling ---
 except Exception as e:
-    st.error(f"An error occurred: {str(e)}")
-    st.info("The application expects a database file named 'birds.db' with a 'detections' table containing 'Date', 'Time', 'Com_Name', 'Sci_Name', and 'Confidence' columns. **(Note: This environment uses mock data to run the dashboard logic.)**")
+    # This catches general errors, while load_data catches database connection errors
+    st.error(f"An unexpected application error occurred: {str(e)}")
+    st.info("Please ensure the data structure is correct (Date, Time, Com_Name, Sci_Name, Confidence columns).")
