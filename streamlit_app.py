@@ -15,7 +15,7 @@ st.set_page_config(
 def load_data():
     """Load data from SQLite database"""
     conn = sqlite3.connect('birds.db')
-    query = "SELECT * FROM birds"
+    query = "SELECT * FROM detections"
     df = pd.read_sql_query(query, conn)
     conn.close()
     
