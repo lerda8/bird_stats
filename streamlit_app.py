@@ -88,7 +88,7 @@ try:
         "Minimum Confidence Score",
         min_value=0.0,
         max_value=1.0,
-        value=0.5, 
+        value=0.7, 
         step=0.05,
         format="%.2f"
     )
