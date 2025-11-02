@@ -15,12 +15,12 @@ st.set_page_config(
 def load_data():
     """Load data from SQLite database"""
     conn = sqlite3.connect('birds.db')
-    query = "SELECT * FROM detections"
+    query = "SELECT * FROM birds"
     df = pd.read_sql_query(query, conn)
     conn.close()
     
     # Convert date column to datetime
-    df['Date'] = pd.to_datetime(df['Date'])
+    df['date'] = pd.to_datetime(df['date'])
     
     return df
 
@@ -36,8 +36,8 @@ try:
     st.sidebar.header("Filters")
     
     # Date range filter
-    min_date = df['Date'].min()
-    max_date = df['Date'].max()
+    min_date = df['date'].min()
+    max_date = df['date'].max()
     date_range = st.sidebar.date_input(
         "Date Range",
         value=(min_date, max_date),
@@ -47,11 +47,12 @@ try:
     
     # Confidence threshold
     min_confidence = st.sidebar.slider(
-        "Minimum Confidence (%)",
-        min_value=0,
-        max_value=100,
-        value=0,
-        step=5
+        "Minimum Confidence",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.05,
+        format="%.2f"
     )
     
     # Species filter
@@ -66,8 +67,8 @@ try:
     filtered_df = df.copy()
     if len(date_range) == 2:
         filtered_df = filtered_df[
-            (filtered_df['Date'] >= pd.to_datetime(date_range[0])) &
-            (filtered_df['Date'] <= pd.to_datetime(date_range[1]))
+            (filtered_df['date'] >= pd.to_datetime(date_range[0])) &
+            (filtered_df['date'] <= pd.to_datetime(date_range[1]))
         ]
     filtered_df = filtered_df[filtered_df['Confidence'] >= min_confidence]
     if selected_species:
@@ -87,7 +88,7 @@ try:
         st.metric("Avg Confidence", f"{avg_confidence:.1f}%")
     
     with col4:
-        date_span = (filtered_df['Date'].max() - filtered_df['Date'].min()).days
+        date_span = (filtered_df['date'].max() - filtered_df['date'].min()).days
         st.metric("Date Span (days)", date_span)
     
     st.markdown("---")
@@ -109,7 +110,7 @@ try:
     
     # Time series analysis
     st.subheader("Identifications Over Time")
-    daily_counts = filtered_df.groupby('Date').size()
+    daily_counts = filtered_df.groupby('date').size()
     st.line_chart(daily_counts)
     
     # Weekly and hourly analysis
@@ -146,7 +147,7 @@ try:
     with col1:
         sort_by = st.selectbox(
             "Sort by",
-            options=['Date', 'Confidence', 'Com_Name', 'Week'],
+            options=['date', 'Confidence', 'Com_Name', 'Week'],
             index=0
         )
     with col2:
@@ -159,7 +160,7 @@ try:
     
     # Display table
     st.dataframe(
-        display_df[['Date', 'time', 'Com_Name', 'Sci_Name', 'Confidence', 'Week']],
+        display_df[['date', 'time', 'Com_Name', 'Sci_Name', 'Confidence', 'Week']],
         use_container_width=True,
         height=400
     )
