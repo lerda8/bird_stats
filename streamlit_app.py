@@ -20,7 +20,7 @@ def load_data():
     conn.close()
     
     # Convert date column to datetime
-    df['date'] = pd.to_datetime(df['date'])
+    df['Date'] = pd.to_datetime(df['Date'])
     
     return df
 
@@ -36,8 +36,8 @@ try:
     st.sidebar.header("Filters")
     
     # Date range filter
-    min_date = df['date'].min()
-    max_date = df['date'].max()
+    min_date = df['Date'].min()
+    max_date = df['Date'].max()
     date_range = st.sidebar.date_input(
         "Date Range",
         value=(min_date, max_date),
@@ -67,8 +67,8 @@ try:
     filtered_df = df.copy()
     if len(date_range) == 2:
         filtered_df = filtered_df[
-            (filtered_df['date'] >= pd.to_datetime(date_range[0])) &
-            (filtered_df['date'] <= pd.to_datetime(date_range[1]))
+            (filtered_df['Date'] >= pd.to_datetime(date_range[0])) &
+            (filtered_df['Date'] <= pd.to_datetime(date_range[1]))
         ]
     filtered_df = filtered_df[filtered_df['Confidence'] >= min_confidence]
     if selected_species:
@@ -85,10 +85,10 @@ try:
     
     with col3:
         avg_confidence = filtered_df['Confidence'].mean()
-        st.metric("Avg Confidence", f"{avg_confidence:.1f}%")
+        st.metric("Avg Confidence", f"{avg_confidence:.3f}")
     
     with col4:
-        date_span = (filtered_df['date'].max() - filtered_df['date'].min()).days
+        date_span = (filtered_df['Date'].max() - filtered_df['Date'].min()).days
         st.metric("Date Span (days)", date_span)
     
     st.markdown("---")
@@ -110,7 +110,7 @@ try:
     
     # Time series analysis
     st.subheader("Identifications Over Time")
-    daily_counts = filtered_df.groupby('date').size()
+    daily_counts = filtered_df.groupby('Date').size()
     st.line_chart(daily_counts)
     
     # Weekly and hourly analysis
