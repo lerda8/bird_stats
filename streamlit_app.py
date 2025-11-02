@@ -129,7 +129,7 @@ try:
     with col2:
         st.subheader("Hourly Activity Pattern")
         # Extract hour from time column
-        filtered_df['hour'] = pd.to_datetime(filtered_df['time'], format='%H:%M:%S').dt.hour
+        filtered_df['hour'] = pd.to_datetime(filtered_df['Time'], format='%H:%M:%S').dt.hour
         hourly_counts = filtered_df.groupby('hour').size()
         st.line_chart(hourly_counts)
     
@@ -165,7 +165,7 @@ try:
     
     # Display table
     st.dataframe(
-        display_df[['Date', 'time', 'Com_Name', 'Sci_Name', 'Confidence', 'Week']],
+        display_df[['Date', 'Time', 'Com_Name', 'Sci_Name', 'Confidence', 'Week']],
         use_container_width=True,
         height=400
     )
