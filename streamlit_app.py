@@ -1,0 +1,231 @@
+import streamlit as st
+import sqlite3
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+
+# Page configuration
+st.set_page_config(
+    page_title="Bird Identification Analytics",
+    page_icon="🦜",
+    layout="wide"
+)
+
+# Database connection
+@st.cache_data
+def load_data():
+    """Load data from SQLite database"""
+    conn = sqlite3.connect('birds.db')
+    query = "SELECT * FROM birds"
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    
+    # Convert date column to datetime
+    df['date'] = pd.to_datetime(df['date'])
+    
+    return df
+
+# Load data
+try:
+    df = load_data()
+    
+    # Title and description
+    st.title("🦜 Bird Identification Analytics Dashboard")
+    st.markdown("---")
+    
+    # Sidebar filters
+    st.sidebar.header("Filters")
+    
+    # Date range filter
+    min_date = df['date'].min()
+    max_date = df['date'].max()
+    date_range = st.sidebar.date_input(
+        "Date Range",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date
+    )
+    
+    # Confidence threshold
+    min_confidence = st.sidebar.slider(
+        "Minimum Confidence (%)",
+        min_value=0,
+        max_value=100,
+        value=0,
+        step=5
+    )
+    
+    # Species filter
+    all_species = sorted(df['Com_Name'].unique())
+    selected_species = st.sidebar.multiselect(
+        "Filter by Species",
+        options=all_species,
+        default=[]
+    )
+    
+    # Apply filters
+    filtered_df = df.copy()
+    if len(date_range) == 2:
+        filtered_df = filtered_df[
+            (filtered_df['date'] >= pd.to_datetime(date_range[0])) &
+            (filtered_df['date'] <= pd.to_datetime(date_range[1]))
+        ]
+    filtered_df = filtered_df[filtered_df['Confidence'] >= min_confidence]
+    if selected_species:
+        filtered_df = filtered_df[filtered_df['Com_Name'].isin(selected_species)]
+    
+    # Key metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Identifications", len(filtered_df))
+    
+    with col2:
+        st.metric("Unique Species", filtered_df['Com_Name'].nunique())
+    
+    with col3:
+        avg_confidence = filtered_df['Confidence'].mean()
+        st.metric("Avg Confidence", f"{avg_confidence:.1f}%")
+    
+    with col4:
+        date_span = (filtered_df['date'].max() - filtered_df['date'].min()).days
+        st.metric("Date Span (days)", date_span)
+    
+    st.markdown("---")
+    
+    # Two column layout for charts
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Top species chart
+        st.subheader("Top 10 Most Identified Species")
+        species_counts = filtered_df['Com_Name'].value_counts().head(10)
+        fig_species = px.bar(
+            x=species_counts.values,
+            y=species_counts.index,
+            orientation='h',
+            labels={'x': 'Count', 'y': 'Species'},
+            color=species_counts.values,
+            color_continuous_scale='Viridis'
+        )
+        fig_species.update_layout(showlegend=False, height=400)
+        st.plotly_chart(fig_species, use_container_width=True)
+    
+    with col2:
+        # Confidence distribution
+        st.subheader("Confidence Distribution")
+        fig_conf = px.histogram(
+            filtered_df,
+            x='Confidence',
+            nbins=20,
+            labels={'Confidence': 'Confidence (%)', 'count': 'Frequency'},
+            color_discrete_sequence=['#636EFA']
+        )
+        fig_conf.update_layout(height=400)
+        st.plotly_chart(fig_conf, use_container_width=True)
+    
+    # Time series analysis
+    st.subheader("Identifications Over Time")
+    daily_counts = filtered_df.groupby('date').size().reset_index(name='count')
+    fig_timeline = px.line(
+        daily_counts,
+        x='date',
+        y='count',
+        labels={'date': 'Date', 'count': 'Number of Identifications'},
+        markers=True
+    )
+    fig_timeline.update_layout(height=350)
+    st.plotly_chart(fig_timeline, use_container_width=True)
+    
+    # Weekly analysis
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Identifications by Week")
+        week_counts = filtered_df.groupby('Week').size().reset_index(name='count')
+        fig_week = px.bar(
+            week_counts,
+            x='Week',
+            y='count',
+            labels={'Week': 'Week Number', 'count': 'Count'},
+            color='count',
+            color_continuous_scale='Blues'
+        )
+        fig_week.update_layout(showlegend=False, height=350)
+        st.plotly_chart(fig_week, use_container_width=True)
+    
+    with col2:
+        st.subheader("Hourly Activity Pattern")
+        # Extract hour from time column
+        filtered_df['hour'] = pd.to_datetime(filtered_df['time'], format='%H:%M:%S').dt.hour
+        hourly_counts = filtered_df.groupby('hour').size().reset_index(name='count')
+        fig_hour = px.line(
+            hourly_counts,
+            x='hour',
+            y='count',
+            labels={'hour': 'Hour of Day', 'count': 'Count'},
+            markers=True
+        )
+        fig_hour.update_layout(height=350)
+        st.plotly_chart(fig_hour, use_container_width=True)
+    
+    # Detailed data table
+    st.subheader("Detailed Data")
+    
+    # Add search functionality
+    search_term = st.text_input("Search species (common or scientific name)")
+    if search_term:
+        display_df = filtered_df[
+            (filtered_df['Com_Name'].str.contains(search_term, case=False, na=False)) |
+            (filtered_df['Sci_Name'].str.contains(search_term, case=False, na=False))
+        ]
+    else:
+        display_df = filtered_df
+    
+    # Sort options
+    sort_by = st.selectbox(
+        "Sort by",
+        options=['date', 'Confidence', 'Com_Name', 'Week'],
+        index=0
+    )
+    sort_order = st.radio("Order", options=['Descending', 'Ascending'], horizontal=True)
+    
+    display_df = display_df.sort_values(
+        by=sort_by,
+        ascending=(sort_order == 'Ascending')
+    )
+    
+    # Display table
+    st.dataframe(
+        display_df[['date', 'time', 'Com_Name', 'Sci_Name', 'Confidence', 'Week']],
+        use_container_width=True,
+        height=400
+    )
+    
+    # Download button
+    csv = display_df.to_csv(index=False)
+    st.download_button(
+        label="Download filtered data as CSV",
+        data=csv,
+        file_name=f"bird_data_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv"
+    )
+    
+    # Species statistics
+    st.markdown("---")
+    st.subheader("Species Statistics")
+    
+    species_stats = filtered_df.groupby('Com_Name').agg({
+        'Confidence': ['mean', 'min', 'max', 'count'],
+        'Sci_Name': 'first'
+    }).round(2)
+    
+    species_stats.columns = ['Avg Confidence', 'Min Confidence', 'Max Confidence', 'Count', 'Scientific Name']
+    species_stats = species_stats.sort_values('Count', ascending=False)
+    
+    st.dataframe(species_stats, use_container_width=True, height=400)
+
+except Exception as e:
+    st.error(f"Error loading data: {str(e)}")
+    st.info("Please ensure 'birds.db' exists in the same directory and contains a 'birds' table with the required columns.")
