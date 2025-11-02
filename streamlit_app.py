@@ -1,9 +1,7 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Page configuration
 st.set_page_config(
@@ -101,76 +99,36 @@ try:
         # Top species chart
         st.subheader("Top 10 Most Identified Species")
         species_counts = filtered_df['Com_Name'].value_counts().head(10)
-        fig_species = px.bar(
-            x=species_counts.values,
-            y=species_counts.index,
-            orientation='h',
-            labels={'x': 'Count', 'y': 'Species'},
-            color=species_counts.values,
-            color_continuous_scale='Viridis'
-        )
-        fig_species.update_layout(showlegend=False, height=400)
-        st.plotly_chart(fig_species, use_container_width=True)
+        st.bar_chart(species_counts)
     
     with col2:
         # Confidence distribution
         st.subheader("Confidence Distribution")
-        fig_conf = px.histogram(
-            filtered_df,
-            x='Confidence',
-            nbins=20,
-            labels={'Confidence': 'Confidence (%)', 'count': 'Frequency'},
-            color_discrete_sequence=['#636EFA']
-        )
-        fig_conf.update_layout(height=400)
-        st.plotly_chart(fig_conf, use_container_width=True)
+        confidence_hist = pd.cut(filtered_df['Confidence'], bins=20).value_counts().sort_index()
+        st.bar_chart(confidence_hist)
     
     # Time series analysis
     st.subheader("Identifications Over Time")
-    daily_counts = filtered_df.groupby('date').size().reset_index(name='count')
-    fig_timeline = px.line(
-        daily_counts,
-        x='date',
-        y='count',
-        labels={'date': 'Date', 'count': 'Number of Identifications'},
-        markers=True
-    )
-    fig_timeline.update_layout(height=350)
-    st.plotly_chart(fig_timeline, use_container_width=True)
+    daily_counts = filtered_df.groupby('date').size()
+    st.line_chart(daily_counts)
     
-    # Weekly analysis
+    # Weekly and hourly analysis
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Identifications by Week")
-        week_counts = filtered_df.groupby('Week').size().reset_index(name='count')
-        fig_week = px.bar(
-            week_counts,
-            x='Week',
-            y='count',
-            labels={'Week': 'Week Number', 'count': 'Count'},
-            color='count',
-            color_continuous_scale='Blues'
-        )
-        fig_week.update_layout(showlegend=False, height=350)
-        st.plotly_chart(fig_week, use_container_width=True)
+        week_counts = filtered_df.groupby('Week').size()
+        st.bar_chart(week_counts)
     
     with col2:
         st.subheader("Hourly Activity Pattern")
         # Extract hour from time column
         filtered_df['hour'] = pd.to_datetime(filtered_df['time'], format='%H:%M:%S').dt.hour
-        hourly_counts = filtered_df.groupby('hour').size().reset_index(name='count')
-        fig_hour = px.line(
-            hourly_counts,
-            x='hour',
-            y='count',
-            labels={'hour': 'Hour of Day', 'count': 'Count'},
-            markers=True
-        )
-        fig_hour.update_layout(height=350)
-        st.plotly_chart(fig_hour, use_container_width=True)
+        hourly_counts = filtered_df.groupby('hour').size()
+        st.line_chart(hourly_counts)
     
     # Detailed data table
+    st.markdown("---")
     st.subheader("Detailed Data")
     
     # Add search functionality
@@ -184,16 +142,19 @@ try:
         display_df = filtered_df
     
     # Sort options
-    sort_by = st.selectbox(
-        "Sort by",
-        options=['date', 'Confidence', 'Com_Name', 'Week'],
-        index=0
-    )
-    sort_order = st.radio("Order", options=['Descending', 'Ascending'], horizontal=True)
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        sort_by = st.selectbox(
+            "Sort by",
+            options=['date', 'Confidence', 'Com_Name', 'Week'],
+            index=0
+        )
+    with col2:
+        sort_order = st.radio("Order", options=['Desc', 'Asc'], horizontal=True)
     
     display_df = display_df.sort_values(
         by=sort_by,
-        ascending=(sort_order == 'Ascending')
+        ascending=(sort_order == 'Asc')
     )
     
     # Display table
@@ -206,7 +167,7 @@ try:
     # Download button
     csv = display_df.to_csv(index=False)
     st.download_button(
-        label="Download filtered data as CSV",
+        label="📥 Download filtered data as CSV",
         data=csv,
         file_name=f"bird_data_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv"
@@ -223,6 +184,8 @@ try:
     
     species_stats.columns = ['Avg Confidence', 'Min Confidence', 'Max Confidence', 'Count', 'Scientific Name']
     species_stats = species_stats.sort_values('Count', ascending=False)
+    species_stats = species_stats.reset_index()
+    species_stats.columns = ['Common Name', 'Avg Confidence', 'Min Confidence', 'Max Confidence', 'Count', 'Scientific Name']
     
     st.dataframe(species_stats, use_container_width=True, height=400)
 
