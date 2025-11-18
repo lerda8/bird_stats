@@ -1,7 +1,8 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
+import duckdb
 from datetime import datetime
+from pathlib import Path
 
 # ==============================
 # 1. Page Configuration
@@ -15,23 +16,46 @@ st.set_page_config(
 # ==============================
 # 2. Data Loading
 # ==============================
+DATABASE_FILE = "birds.duckdb"
+
+
 @st.cache_data
-def load_data():
+def load_data(db_file: str = DATABASE_FILE):
+    db_path = Path(db_file)
+    if not db_path.exists():
+        st.error(f"❌ Database file '{db_file}' not found in project directory.")
+        return pd.DataFrame()
+
     try:
-        conn = sqlite3.connect("birds.db")
-        df = pd.read_sql_query("SELECT * FROM detections", conn)
-        conn.close()
+        with duckdb.connect(database=str(db_path), read_only=True) as conn:
+            df = conn.execute("SELECT * FROM detections").fetchdf()
     except Exception as e:
-        st.error(f"❌ Could not load data from database: {e}")
+        st.error(f"❌ Could not load data from DuckDB database: {e}")
         return pd.DataFrame()
 
-    if not {"Date", "Time", "Com_Name", "Sci_Name", "Confidence"}.issubset(df.columns):
-        st.error("❌ Missing required columns in the database.")
+    column_mapping = {
+        "date": "Date",
+        "time": "Time",
+        "commonName": "Com_Name",
+        "scientificName": "Sci_Name",
+        "confidence": "Confidence",
+    }
+    df = df.rename(columns=column_mapping)
+
+    required_columns = set(column_mapping.values())
+    if not required_columns.issubset(df.columns):
+        missing = ", ".join(sorted(required_columns - set(df.columns)))
+        st.error(f"❌ Missing required columns in the database: {missing}")
         return pd.DataFrame()
 
-    # Process time columns
-    df["Date"] = pd.to_datetime(df["Date"]).dt.date
-    df["DateTime"] = pd.to_datetime(df["Date"].astype(str) + " " + df["Time"])
+    df["Confidence"] = pd.to_numeric(df["Confidence"], errors="coerce")
+    df = df.dropna(subset=["Confidence"])
+
+    date_str = df["Date"].astype(str)
+    df["DateTime"] = pd.to_datetime(date_str + " " + df["Time"].astype(str), errors="coerce")
+    df = df.dropna(subset=["DateTime"])
+
+    df["Date"] = df["DateTime"].dt.date
     df["Hour"] = df["DateTime"].dt.hour
     df["DayName"] = df["DateTime"].dt.day_name()
     df["Week"] = df["DateTime"].dt.isocalendar().week.astype(int)
