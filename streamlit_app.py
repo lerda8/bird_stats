@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import duckdb
 from datetime import datetime
 from pathlib import Path
 
@@ -16,7 +15,7 @@ st.set_page_config(
 # ==============================
 # 2. Data Loading
 # ==============================
-DATABASE_FILE = "birds.duckdb"
+DATA_FILE = "birds.csv"
 BOOL_COLUMNS = [
     "verified",
     "locked",
@@ -24,21 +23,21 @@ BOOL_COLUMNS = [
     "isNewThisYear",
     "isNewThisSeason",
 ]
+TRUE_VALUES = {"true", "1", "yes", "verified", "locked"}
 NUMERIC_COLUMNS = ["daysSinceFirstSeen", "daysThisYear", "daysThisSeason"]
 
 
 @st.cache_data
-def load_data(db_file: str = DATABASE_FILE):
-    db_path = Path(db_file)
-    if not db_path.exists():
-        st.error(f"❌ Database file '{db_file}' not found in project directory.")
+def load_data(data_file: str = DATA_FILE):
+    data_path = Path(data_file)
+    if not data_path.exists():
+        st.error(f"❌ Data file '{data_file}' not found in project directory.")
         return pd.DataFrame()
 
     try:
-        with duckdb.connect(database=str(db_path), read_only=True) as conn:
-            df = conn.execute("SELECT * FROM detections").fetchdf()
+        df = pd.read_csv(data_path)
     except Exception as e:
-        st.error(f"❌ Could not load data from DuckDB database: {e}")
+        st.error(f"❌ Could not load data from CSV file: {e}")
         return pd.DataFrame()
 
     column_mapping = {
@@ -66,7 +65,7 @@ def load_data(db_file: str = DATABASE_FILE):
                 .astype(str)
                 .str.strip()
                 .str.lower()
-                .isin({"true", "1", "yes"})
+                .isin(TRUE_VALUES)
             )
 
     for col in NUMERIC_COLUMNS:
