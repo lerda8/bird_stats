@@ -124,7 +124,7 @@ if filtered.empty:
 # ==============================
 # 5. Navigation
 # ==============================
-page = st.sidebar.radio("Select View", ["Overview", "Species Insights"])
+page = st.sidebar.radio("Select View", ["Overview", "Species Insights", "Species Explorer"])
 
 # ==============================
 # 6. Overview Page
@@ -176,7 +176,7 @@ if page == "Overview":
 # ==============================
 # 7. Species Insights Page
 # ==============================
-else:
+elif page == "Species Insights":
     st.header("🐦 Species Insights")
 
     species_summary = (
@@ -331,6 +331,140 @@ else:
             st.dataframe(season_pivot, use_container_width=True, height=350)
         else:
             st.caption("Add 'currentSeason' to the dataset to unlock seasonal insights.")
+
+else:
+    st.header("🔎 Species Explorer")
+    st.caption("Filter down to specific birds, compare stats, and inspect their timelines.")
+
+    search_term = st.text_input("Search species", "").strip().lower()
+    available_species = [s for s in species_list if search_term in s.lower()] or species_list
+
+    default_selection = available_species[: min(3, len(available_species))]
+    selected_focus = st.multiselect(
+        "Select species to analyze (pick 1-5)",
+        available_species,
+        default=default_selection,
+    )
+
+    if not selected_focus:
+        st.info("Select at least one species to see detailed stats.")
+        st.stop()
+
+    explorer_df = filtered[filtered["Com_Name"].isin(selected_focus)].copy()
+
+    if explorer_df.empty:
+        st.warning("No detections found for the selected species within the chosen filters.")
+        st.stop()
+
+    explorer_summary = (
+        explorer_df.groupby("Com_Name")
+        .agg(
+            Detections=("Com_Name", "count"),
+            Avg_Confidence=("Confidence", "mean"),
+            Min_Confidence=("Confidence", "min"),
+            Max_Confidence=("Confidence", "max"),
+            First_Seen=("Date", "min"),
+            Last_Seen=("Date", "max"),
+        )
+        .round({"Avg_Confidence": 2, "Min_Confidence": 2, "Max_Confidence": 2})
+        .sort_values("Detections", ascending=False)
+        .reset_index()
+    )
+    explorer_summary["Active_Days"] = (
+        explorer_summary["Last_Seen"] - explorer_summary["First_Seen"]
+    ).dt.days + 1
+
+    st.subheader("Overview Metrics")
+    metric_cols = st.columns(min(4, len(selected_focus)))
+    for idx, species in enumerate(explorer_summary["Com_Name"]):
+        col = metric_cols[idx % len(metric_cols)]
+        col.metric(
+            species,
+            f"{int(explorer_summary.iloc[idx]['Detections'])} detections",
+            f"{explorer_summary.iloc[idx]['Avg_Confidence']:.2f} avg conf",
+        )
+
+    st.dataframe(explorer_summary, use_container_width=True, height=320)
+
+    st.divider()
+
+    st.subheader("Detection Timeline")
+    trend = (
+        explorer_df.groupby(["Date", "Com_Name"])
+        .size()
+        .reset_index(name="Count")
+        .pivot(index="Date", columns="Com_Name", values="Count")
+        .fillna(0)
+    )
+    st.line_chart(trend, use_container_width=True)
+
+    st.subheader("Daily & Hourly Patterns")
+    col_left, col_right = st.columns(2)
+    with col_left:
+        daily_heat = (
+            explorer_df.groupby(["DayName", "Com_Name"]).size().reset_index(name="Count")
+        )
+        day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        daily_heat["DayName"] = pd.Categorical(daily_heat["DayName"], categories=day_order, ordered=True)
+        pivot_daily = daily_heat.pivot_table(
+            index="DayName", columns="Com_Name", values="Count", fill_value=0
+        ).sort_index()
+        st.bar_chart(pivot_daily, use_container_width=True)
+        st.caption("Detections per weekday for selected species.")
+
+    with col_right:
+        hourly_heat = (
+            explorer_df.groupby(["Hour", "Com_Name"]).size().reset_index(name="Count")
+        )
+        pivot_hourly = hourly_heat.pivot_table(
+            index="Hour", columns="Com_Name", values="Count", fill_value=0
+        ).reindex(range(24), fill_value=0)
+        st.area_chart(pivot_hourly, use_container_width=True)
+        st.caption("Hourly activity comparison.")
+
+    st.divider()
+
+    st.subheader("Confidence & Verification")
+    col_conf, col_verify = st.columns(2)
+    with col_conf:
+        conf_stats = (
+            explorer_df.groupby("Com_Name")["Confidence"]
+            .agg(Avg="mean", Min="min", Max="max")
+            .round(2)
+        )
+        st.bar_chart(conf_stats["Avg"], use_container_width=True)
+        st.caption("Average confidence per species.")
+        with st.expander("Confidence range details"):
+            st.dataframe(conf_stats, use_container_width=True, height=220)
+
+    with col_verify:
+        if "verified" in explorer_df.columns:
+            verify_rate = (
+                explorer_df.groupby("Com_Name")["verified"].mean().mul(100).round(1)
+            )
+            st.bar_chart(verify_rate, use_container_width=True)
+            st.caption("Verification rate (%) per species.")
+        else:
+            st.info("Add the 'verified' column to enable verification stats.")
+
+    st.divider()
+
+    st.subheader("Recent Detections")
+    recent_cols = ["Com_Name", "Date", "Time", "Confidence", "DayName", "Hour", "source"]
+    existing_cols = [c for c in recent_cols if c in explorer_df.columns]
+    st.dataframe(
+        explorer_df.sort_values("DateTime", ascending=False)[existing_cols].head(100),
+        use_container_width=True,
+        height=400,
+    )
+
+    csv_export = explorer_df.to_csv(index=False)
+    st.download_button(
+        "📥 Download selected species data",
+        data=csv_export,
+        file_name=f"species_explorer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+    )
 
 # ==============================
 # End
