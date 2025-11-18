@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # ==============================
@@ -99,10 +99,27 @@ if df.empty:
 # ==============================
 st.sidebar.header("🔍 Filters")
 
+# Debug info
+with st.sidebar.expander("📊 Data Info", expanded=False):
+    min_date, max_date = df["Date"].min(), df["Date"].max()
+    st.caption(f"**Loaded dates:** {min_date} to {max_date}")
+    st.caption(f"**Total rows:** {len(df):,}")
+    st.caption(f"**Unique dates:** {df['Date'].nunique()}")
+    if st.button("🔄 Clear Cache & Reload"):
+        st.cache_data.clear()
+        st.rerun()
+
 min_date, max_date = df["Date"].min(), df["Date"].max()
 
+# Allow wider date range selection (extend by 30 days on each side for flexibility)
+extended_min = min_date - timedelta(days=30)
+extended_max = max_date + timedelta(days=30)
+
 date_range = st.sidebar.date_input(
-    "Date Range", (min_date, max_date), min_value=min_date, max_value=max_date
+    "Date Range", 
+    (min_date, max_date), 
+    min_value=extended_min,
+    max_value=extended_max
 )
 min_conf = st.sidebar.slider("Minimum Confidence", 0.0, 1.0, 0.7, 0.05)
 species_list = sorted(df["Com_Name"].unique())
