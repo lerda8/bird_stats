@@ -17,6 +17,14 @@ st.set_page_config(
 # 2. Data Loading
 # ==============================
 DATABASE_FILE = "birds.duckdb"
+BOOL_COLUMNS = [
+    "verified",
+    "locked",
+    "isNewSpecies",
+    "isNewThisYear",
+    "isNewThisSeason",
+]
+NUMERIC_COLUMNS = ["daysSinceFirstSeen", "daysThisYear", "daysThisSeason"]
 
 
 @st.cache_data
@@ -50,6 +58,20 @@ def load_data(db_file: str = DATABASE_FILE):
 
     df["Confidence"] = pd.to_numeric(df["Confidence"], errors="coerce")
     df = df.dropna(subset=["Confidence"])
+
+    for col in BOOL_COLUMNS:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin({"true", "1", "yes"})
+            )
+
+    for col in NUMERIC_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     date_str = df["Date"].astype(str)
     df["DateTime"] = pd.to_datetime(date_str + " " + df["Time"].astype(str), errors="coerce")
@@ -157,43 +179,158 @@ if page == "Overview":
 else:
     st.header("🐦 Species Insights")
 
-    # --- Top Species ---
-    st.subheader("🏆 Most Frequent Visitors")
-    top_species = filtered["Com_Name"].value_counts().head(10).sort_values(ascending=True)
-    st.bar_chart(top_species, use_container_width=True)
-    st.caption("Top 10 most frequently detected species")
-
-    # --- Species Statistics Table ---
-    st.subheader("📊 Species Statistics")
-    stats = (
+    species_summary = (
         filtered.groupby("Com_Name")
         .agg(
             Count=("Com_Name", "count"),
             Avg_Confidence=("Confidence", "mean"),
             Min_Confidence=("Confidence", "min"),
             Max_Confidence=("Confidence", "max"),
+            First_Seen=("Date", "min"),
+            Last_Seen=("Date", "max"),
         )
-        .round(2)
+        .round({"Avg_Confidence": 2, "Min_Confidence": 2, "Max_Confidence": 2})
         .sort_values("Count", ascending=False)
     )
-    st.dataframe(stats, use_container_width=True, height=400)
-    st.caption("Aggregated detection statistics per species")
+    species_summary["Active_Days"] = (
+        species_summary["Last_Seen"] - species_summary["First_Seen"]
+    ).dt.days + 1
+
+    top_species_name = species_summary.index[0]
+    top_species_count = int(species_summary.iloc[0]["Count"])
+    total_verified = int(filtered["verified"].sum()) if "verified" in filtered.columns else None
+    new_species_count = int(filtered["isNewSpecies"].sum()) if "isNewSpecies" in filtered.columns else 0
+    new_season_count = (
+        int(filtered["isNewThisSeason"].sum()) if "isNewThisSeason" in filtered.columns else 0
+    )
+
+    st.subheader("Snapshot")
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Top Visitor", top_species_name, f"{top_species_count} detections")
+    metric_cols[1].metric("Unique Species", species_summary.shape[0])
+    if total_verified is not None:
+        metric_cols[2].metric("Verified Detections", total_verified)
+    else:
+        metric_cols[2].metric("Avg Confidence", f"{filtered['Confidence'].mean():.2f}")
+    metric_cols[3].metric("New This Season", new_season_count or new_species_count)
 
     st.divider()
 
-    # --- Raw Data Table ---
-    st.subheader("📋 Raw Detection Data")
-    display_cols = ["Date", "Time", "Com_Name", "Sci_Name", "Confidence", "DayName", "Hour"]
-    st.dataframe(filtered[display_cols], use_container_width=True, height=500)
-
-    # --- Download CSV ---
-    csv = filtered.to_csv(index=False)
-    st.download_button(
-        "📥 Download Filtered Data (CSV)",
-        data=csv,
-        file_name=f"bird_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
+    tab_leaderboard, tab_focus, tab_discoveries = st.tabs(
+        ["Leaderboard", "Species Focus", "Discoveries"]
     )
+
+    with tab_leaderboard:
+        st.subheader("🏆 Leaderboard")
+        top_n = species_summary.head(15).iloc[::-1]
+        st.bar_chart(top_n["Count"], use_container_width=True)
+        st.caption("Detection counts for the top species (descending order).")
+
+        leaderboard_df = (
+            species_summary.reset_index()
+            .rename(
+                columns={
+                    "Com_Name": "Species",
+                    "Count": "Detections",
+                    "Avg_Confidence": "Avg Confidence",
+                    "First_Seen": "First Seen",
+                    "Last_Seen": "Last Seen",
+                    "Active_Days": "Active Days",
+                }
+            )
+        )
+        st.dataframe(leaderboard_df, use_container_width=True, height=400)
+
+    with tab_focus:
+        st.subheader("🔬 Species Deep Dive")
+        species_option = st.selectbox("Choose a species to explore", species_summary.index.tolist())
+        focus_df = filtered[filtered["Com_Name"] == species_option]
+
+        col_a, col_b, col_c, col_d = st.columns(4)
+        col_a.metric("Detections", len(focus_df))
+        col_b.metric("Avg Confidence", f"{focus_df['Confidence'].mean():.2f}")
+        first_seen = focus_df["Date"].min()
+        last_seen = focus_df["Date"].max()
+        span = (pd.to_datetime(last_seen) - pd.to_datetime(first_seen)).days + 1
+        col_c.metric("Active Days", span)
+        if "verified" in focus_df.columns:
+            verified_rate = focus_df["verified"].mean() * 100
+            col_d.metric("Verified %", f"{verified_rate:.0f}%")
+        else:
+            morning_rate = (focus_df["Hour"].between(5, 11).mean() * 100)
+            col_d.metric("Morning Activity", f"{morning_rate:.0f}%")
+
+        st.markdown("**Daily detections**")
+        focus_daily = focus_df.groupby("Date").size()
+        st.line_chart(focus_daily, use_container_width=True)
+
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.markdown("**Hourly pattern**")
+            focus_hourly = focus_df.groupby("Hour").size().reindex(range(24), fill_value=0)
+            st.bar_chart(focus_hourly, use_container_width=True)
+        with col_right:
+            st.markdown("**Confidence distribution**")
+            focus_conf = focus_df["Confidence"]
+            conf_hist = pd.DataFrame({"Confidence": focus_conf}).sort_values("Confidence")
+            st.area_chart(conf_hist.set_index("Confidence"), use_container_width=True)
+
+        st.markdown("**Latest detections**")
+        recent_cols = ["Date", "Time", "Confidence", "DayName", "Hour", "source"]
+        existing_cols = [c for c in recent_cols if c in focus_df.columns]
+        st.dataframe(
+            focus_df.sort_values("DateTime", ascending=False)[existing_cols].head(25),
+            use_container_width=True,
+            height=350,
+        )
+
+        csv_focus = focus_df.to_csv(index=False)
+        st.download_button(
+            f"📥 Download {species_option} data",
+            data=csv_focus,
+            file_name=f"{species_option.replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+        )
+
+    with tab_discoveries:
+        st.subheader("🆕 Discoveries & Seasonality")
+        if "isNewSpecies" in filtered.columns and filtered["isNewSpecies"].any():
+            new_species_df = filtered[filtered["isNewSpecies"]]
+            col_x, col_y, col_z = st.columns(3)
+            col_x.metric("Lifetime new species", new_species_df["Com_Name"].nunique())
+            if "daysSinceFirstSeen" in new_species_df.columns:
+                col_y.metric(
+                    "Avg days since first seen",
+                    f"{new_species_df['daysSinceFirstSeen'].mean():.0f}",
+                )
+            if "isNewThisYear" in new_species_df.columns:
+                col_z.metric(
+                    "New this year",
+                    int(new_species_df["isNewThisYear"].sum()),
+                )
+
+            new_species_table = (
+                new_species_df.groupby("Com_Name")
+                .agg(
+                    First_Seen=("Date", "min"),
+                    Last_Seen=("Date", "max"),
+                    Total_Detections=("Com_Name", "count"),
+                )
+                .sort_values("First_Seen")
+            )
+            st.dataframe(new_species_table, use_container_width=True, height=350)
+        else:
+            st.info("No 'new species' flags were detected in the selected range.")
+
+        if "currentSeason" in filtered.columns:
+            seasonal = filtered.groupby(["currentSeason", "Com_Name"]).size().reset_index(name="Count")
+            season_pivot = seasonal.pivot_table(
+                index="currentSeason", columns="Com_Name", values="Count", fill_value=0
+            )
+            st.markdown("**Seasonal activity heatmap**")
+            st.dataframe(season_pivot, use_container_width=True, height=350)
+        else:
+            st.caption("Add 'currentSeason' to the dataset to unlock seasonal insights.")
 
 # ==============================
 # End
