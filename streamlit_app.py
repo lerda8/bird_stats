@@ -57,9 +57,17 @@ def get_bird_data(days=7):
                 }
                 df = df.rename(columns=rename_map)
                 
-                # Převod času na datetime objekt
+                # --- OPRAVA TIMEZONE (Fix pro ValueError) ---
                 if 'Timestamp' in df.columns:
-                    df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601')
+                    # 1. Načíst jako UTC (protože API vrací 'Z' na konci)
+                    df['Timestamp'] = pd.to_datetime(df['Timestamp'], utc=True)
+                    
+                    # 2. Převést na čas v Praze (Europe/Prague)
+                    df['Timestamp'] = df['Timestamp'].dt.tz_convert('Europe/Prague')
+                    
+                    # 3. Odstranit informaci o zóně (udělat z toho "naivní" čas), 
+                    # aby to šlo sloučit s daty o počasí
+                    df['Timestamp'] = df['Timestamp'].dt.tz_localize(None)
                 
                 # Převod spolehlivosti na číslo
                 if 'Confidence' in df.columns:
@@ -104,7 +112,7 @@ def get_historical_weather(days=7):
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d"),
         "hourly": ["temperature_2m", "precipitation", "cloudcover"],
-        "timezone": "auto"
+        "timezone": "auto"  # Vrátí lokální čas bez zóny (naive datetime)
     }
     
     try:
@@ -155,6 +163,10 @@ if not df_birds.empty:
         df_weather = get_historical_weather(days_to_analyze)
         
         if not df_weather.empty:
+            # Zajistíme, že oba sloupce mají stejný typ (odstranění zóny pro jistotu i zde)
+            if df_weather['Timestamp'].dt.tz is not None:
+                df_weather['Timestamp'] = df_weather['Timestamp'].dt.tz_localize(None)
+
             df_birds['Hour'] = df_birds['Timestamp'].dt.round('h')
             df_counts = df_birds.groupby('Hour').size().reset_index(name='Detection Count')
             
