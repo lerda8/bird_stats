@@ -37,7 +37,10 @@ def get_bird_data(start_date, end_date):
         
         params = {
             'start': start_str,
-            'end': end_str
+            'end': end_str,
+            # ZVÝŠENÍ LIMITU: API pravděpodobně omezuje výsledky na 100.
+            # Tímto parametrem zajistíme, že dostaneme více dat.
+            'limit': 10000 
         }
         
         headers = {'User-Agent': 'StreamlitBirdNET/1.0'}
