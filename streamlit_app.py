@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import numpy as np
 
 # --- KONFIGURACE ---
@@ -23,18 +23,17 @@ st.markdown(f"Zdroj dat: [{BIRDNET_API_URL}]({BIRDNET_API_URL})")
 # --- NAČÍTÁNÍ DAT ---
 
 @st.cache_data(ttl=3600)
-def get_bird_data(days=7):
+def get_bird_data(start_date, end_date):
     """
-    Stáhne data o detekcích ptáků.
-    Parsuje JSON strukturu: {"data": [{"beginTime": "...", "commonName": "...", ...}]}
+    Stáhne data o detekcích ptáků pro zadaný rozsah dat.
     """
     # ------------------------------------------------------------------
     # 1. Pokus o stažení z API
     # ------------------------------------------------------------------
     try:
         params = {
-            'start': (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d'),
-            'end': datetime.now().strftime('%Y-%m-%d')
+            'start': start_date.strftime('%Y-%m-%d'),
+            'end': end_date.strftime('%Y-%m-%d')
         }
         
         headers = {'User-Agent': 'StreamlitBirdNET/1.0'}
@@ -57,19 +56,12 @@ def get_bird_data(days=7):
                 }
                 df = df.rename(columns=rename_map)
                 
-                # --- OPRAVA TIMEZONE (Fix pro ValueError) ---
+                # --- OPRAVA TIMEZONE ---
                 if 'Timestamp' in df.columns:
-                    # 1. Načíst jako UTC (protože API vrací 'Z' na konci)
                     df['Timestamp'] = pd.to_datetime(df['Timestamp'], utc=True)
-                    
-                    # 2. Převést na čas v Praze (Europe/Prague)
                     df['Timestamp'] = df['Timestamp'].dt.tz_convert('Europe/Prague')
-                    
-                    # 3. Odstranit informaci o zóně (udělat z toho "naivní" čas), 
-                    # aby to šlo sloučit s daty o počasí
                     df['Timestamp'] = df['Timestamp'].dt.tz_localize(None)
                 
-                # Převod spolehlivosti na číslo
                 if 'Confidence' in df.columns:
                     df['Confidence'] = pd.to_numeric(df['Confidence'])
                 
@@ -83,9 +75,12 @@ def get_bird_data(days=7):
         st.warning(f"Nelze se připojit k API ({e}). Používám simulovaná data pro ukázku.")
 
     # ------------------------------------------------------------------
-    # 2. Simulovaná data (pokud API selže)
+    # 2. Simulovaná data (Fallback)
     # ------------------------------------------------------------------
-    dates = pd.date_range(end=datetime.now(), periods=days*24*2, freq='30min')
+    # Vygenerujeme data pro zadaný rozsah
+    delta = end_date - start_date
+    days = delta.days + 1
+    dates = pd.date_range(start=start_date, periods=days*24*2, freq='30min')
     
     data = {
         'Timestamp': dates,
@@ -98,13 +93,11 @@ def get_bird_data(days=7):
     return df
 
 @st.cache_data(ttl=3600)
-def get_historical_weather(days=7):
+def get_historical_weather(start_date, end_date):
     """
-    Stáhne historické počasí z Open-Meteo (fallback).
+    Stáhne historické počasí z Open-Meteo pro zadaný rozsah.
     """
     url = "https://archive-api.open-meteo.com/v1/archive"
-    end_date = datetime.now().date()
-    start_date = end_date - timedelta(days=days)
     
     params = {
         "latitude": LATITUDE,
@@ -112,7 +105,7 @@ def get_historical_weather(days=7):
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d"),
         "hourly": ["temperature_2m", "precipitation", "cloudcover"],
-        "timezone": "auto"  # Vrátí lokální čas bez zóny (naive datetime)
+        "timezone": "auto"
     }
     
     try:
@@ -131,121 +124,153 @@ def get_historical_weather(days=7):
 
 # --- HLAVNÍ APLIKACE ---
 
-# Boční panel
-days_to_analyze = st.sidebar.slider("Počet dní k analýze", 1, 30, 7)
+# 1. VÝBĚR DATA (NOVÉ)
+st.sidebar.header("Filtrování")
+today = datetime.now().date()
+default_start = today - timedelta(days=7)
 
-with st.spinner('Načítám data o detekcích...'):
-    df_birds = get_bird_data(days_to_analyze)
+# Widget pro výběr rozsahu dat
+date_range = st.sidebar.date_input(
+    "Vyberte časové období",
+    value=(default_start, today),
+    max_value=today
+)
 
-if not df_birds.empty:
+# Ověření, že máme start i konec data
+if isinstance(date_range, tuple) and len(date_range) == 2:
+    start_d, end_d = date_range
     
-    # 1. SLOUČENÍ S POČASÍM
-    bird_cols = [c.lower() for c in df_birds.columns]
-    has_internal_weather = any(x in bird_cols for x in ['temp', 'temperature', 'weather'])
-    
-    if has_internal_weather:
-        st.success("✅ Používám data o počasí přímo z logů BirdNET.")
-        df_analysis = df_birds.copy()
-        # Standardizace názvů
-        col_map = {c: c for c in df_birds.columns}
-        for c in df_birds.columns:
-            if 'temp' in c.lower(): col_map[c] = 'Temperature_Analysis'
-        df_analysis.rename(columns=col_map, inplace=True)
-        
-        df_analysis['Hour'] = df_analysis['Timestamp'].dt.round('h')
-        df_weather_grouped = df_analysis.groupby('Hour')['Temperature_Analysis'].mean().reset_index()
-        df_counts = df_analysis.groupby('Hour').size().reset_index(name='Detection Count')
-        df_merged = pd.merge(df_counts, df_weather_grouped, on='Hour')
-        
-    else:
-        # Tento blok proběhne, pokud v JSONu není počasí (váš případ)
-        st.info("ℹ️ V logu chybí počasí. Stahuji data z Open-Meteo...")
-        df_weather = get_historical_weather(days_to_analyze)
-        
-        if not df_weather.empty:
-            # Zajistíme, že oba sloupce mají stejný typ (odstranění zóny pro jistotu i zde)
-            if df_weather['Timestamp'].dt.tz is not None:
-                df_weather['Timestamp'] = df_weather['Timestamp'].dt.tz_localize(None)
+    with st.spinner(f'Načítám data od {start_d} do {end_d}...'):
+        df_birds = get_bird_data(start_d, end_d)
 
-            df_birds['Hour'] = df_birds['Timestamp'].dt.round('h')
-            df_counts = df_birds.groupby('Hour').size().reset_index(name='Detection Count')
+    if not df_birds.empty:
+        # Filtrujeme dataframe ještě lokálně pro jistotu (pokud by API vrátilo víc)
+        mask = (df_birds['Timestamp'].dt.date >= start_d) & (df_birds['Timestamp'].dt.date <= end_d)
+        df_birds = df_birds.loc[mask]
+        
+        # --- ZPRACOVÁNÍ POČASÍ ---
+        bird_cols = [c.lower() for c in df_birds.columns]
+        has_internal_weather = any(x in bird_cols for x in ['temp', 'temperature', 'weather'])
+        
+        if has_internal_weather:
+            df_analysis = df_birds.copy()
+            col_map = {c: c for c in df_birds.columns}
+            for c in df_birds.columns:
+                if 'temp' in c.lower(): col_map[c] = 'Temperature_Analysis'
+            df_analysis.rename(columns=col_map, inplace=True)
             
-            # Sloučení podle hodiny
-            df_merged = pd.merge(df_counts, df_weather, left_on='Hour', right_on='Timestamp', how='inner')
-            df_merged['Temperature_Analysis'] = df_merged['External_Temp']
+            df_analysis['Hour'] = df_analysis['Timestamp'].dt.floor('h')
+            df_weather_grouped = df_analysis.groupby('Hour')['Temperature_Analysis'].mean().reset_index()
+            df_counts = df_analysis.groupby('Hour').size().reset_index(name='Detection Count')
+            df_merged = pd.merge(df_counts, df_weather_grouped, on='Hour')
+            
         else:
-            st.error("Nepodařilo se stáhnout data o počasí.")
-            df_merged = pd.DataFrame()
+            # Stahujeme počasí pro zvolený rozsah
+            df_weather = get_historical_weather(start_d, end_d)
+            
+            if not df_weather.empty:
+                if df_weather['Timestamp'].dt.tz is not None:
+                    df_weather['Timestamp'] = df_weather['Timestamp'].dt.tz_localize(None)
 
-    # --- VIZUALIZACE ---
-    
-    if not df_merged.empty:
-        # 1. Korelace (Scatter Plot)
-        st.subheader(f"🌡️ Závislost aktivity na teplotě")
+                df_birds['Hour'] = df_birds['Timestamp'].dt.floor('h')
+                df_counts = df_birds.groupby('Hour').size().reset_index(name='Detection Count')
+                
+                df_merged = pd.merge(df_counts, df_weather, left_on='Hour', right_on='Timestamp', how='inner')
+                df_merged['Temperature_Analysis'] = df_merged['External_Temp']
+            else:
+                df_merged = pd.DataFrame()
+
+        # --- VIZUALIZACE (NOVÁ) ---
         
-        fig_corr = px.scatter(
-            df_merged, 
-            x="Temperature_Analysis", 
-            y="Detection Count",
-            hover_data=['Hour'],
-            title="Korelace: Teplota vs Počet detekcí",
-            trendline="ols", 
-            labels={
-                "Temperature_Analysis": "Teplota (°C)", 
-                "Detection Count": "Počet detekcí za hodinu"
-            }
-        )
-        st.plotly_chart(fig_corr, use_container_width=True)
+        if not df_merged.empty:
+            # 1. Hlavní graf: Kombinace Sloupců (Ptáci) a Čáry (Teplota)
+            st.subheader(f"🌡️ Vztah mezi počtem ptáků a teplotou")
+            
+            fig_combo = go.Figure()
+            
+            # Sloupce: Počet ptáků
+            fig_combo.add_trace(go.Bar(
+                x=df_merged['Hour'],
+                y=df_merged['Detection Count'],
+                name='Počet ptáků',
+                marker_color='rgba(55, 128, 191, 0.7)', # Modrá s průhledností
+                yaxis='y'
+            ))
+            
+            # Čára: Teplota
+            fig_combo.add_trace(go.Scatter(
+                x=df_merged['Hour'],
+                y=df_merged['Temperature_Analysis'],
+                name='Teplota (°C)',
+                mode='lines', # Pouze čára, bez bodů
+                line=dict(color='firebrick', width=3),
+                yaxis='y2' # Mapování na druhou osu Y
+            ))
 
-        # 2. Časová osa (Timeline)
-        st.subheader("📅 Aktivita v čase")
-        fig_timeline = go.Figure()
+            # Nastavení layoutu pro dvě osy
+            fig_combo.update_layout(
+                title="Vývoj v čase: Detekce vs. Teplota",
+                xaxis=dict(title="Čas"),
+                yaxis=dict(
+                    title="Počet detekcí",
+                    titlefont=dict(color="#1f77b4"),
+                    tickfont=dict(color="#1f77b4")
+                ),
+                yaxis2=dict(
+                    title="Teplota (°C)",
+                    titlefont=dict(color="firebrick"),
+                    tickfont=dict(color="firebrick"),
+                    overlaying='y',
+                    side='right'
+                ),
+                legend=dict(x=0, y=1.1, orientation='h'),
+                hovermode='x unified' # Společný tooltip pro obě hodnoty
+            )
+            
+            st.plotly_chart(fig_combo, use_container_width=True)
+
+            # 2. Korelační graf (Scatter) - ponecháváme jako doplňkový
+            with st.expander("Zobrazit detailní korelaci (Scatter Plot)"):
+                fig_corr = px.scatter(
+                    df_merged, 
+                    x="Temperature_Analysis", 
+                    y="Detection Count",
+                    title="Scatter Plot: Teplota vs Detekce",
+                    trendline="ols",
+                    labels={"Temperature_Analysis": "Teplota", "Detection Count": "Počet detekcí"}
+                )
+                st.plotly_chart(fig_corr, use_container_width=True)
+
+        # 3. Top Druhy (Beze změny)
+        st.subheader("🏆 Statistiky druhů")
+        col1, col2 = st.columns([2, 1])
         
-        # Počty ptáků
-        fig_timeline.add_trace(go.Bar(
-            x=df_merged['Hour'], 
-            y=df_merged['Detection Count'], 
-            name='Počet detekcí',
-            marker_color='#1f77b4'
-        ))
+        with col1:
+            if 'CommonName' in df_birds.columns:
+                top_species = df_birds['CommonName'].value_counts().head(15)
+                fig_bar = px.bar(
+                    top_species, 
+                    orientation='h', 
+                    title="Nejčastější druhy",
+                    labels={"index": "Druh", "value": "Počet"},
+                    color=top_species.values,
+                    color_continuous_scale='Viridis'
+                )
+                fig_bar.update_layout(showlegend=False)
+                st.plotly_chart(fig_bar, use_container_width=True)
         
-        # Čára teploty
-        fig_timeline.add_trace(go.Scatter(
-            x=df_merged['Hour'], 
-            y=df_merged['Temperature_Analysis'], 
-            name='Teplota (°C)',
-            yaxis='y2',
-            line=dict(color='#ff7f0e', width=3)
-        ))
+        with col2:
+            st.metric("Celkem detekcí", len(df_birds))
+            st.metric("Unikátních druhů", df_birds['CommonName'].nunique())
+            if not df_merged.empty:
+                st.metric("Průměrná teplota", f"{df_merged['Temperature_Analysis'].mean():.1f} °C")
 
-        fig_timeline.update_layout(
-            title="Detekce a teplota v průběhu času",
-            yaxis=dict(title="Počet detekcí"),
-            yaxis2=dict(title="Teplota (°C)", overlaying='y', side='right'),
-            legend=dict(x=0, y=1.1, orientation='h')
-        )
-        st.plotly_chart(fig_timeline, use_container_width=True)
+        # 4. Tabulka
+        with st.expander("🔍 Prohlížeč detailních dat"):
+            st.dataframe(df_birds)
 
-    # 3. Nejčastější druhy
-    st.subheader("🏆 Nejčastěji detekované druhy")
-    if 'CommonName' in df_birds.columns:
-        top_species = df_birds['CommonName'].value_counts().head(10)
-        fig_bar = px.bar(
-            top_species, 
-            orientation='h', 
-            title="Top 10 druhů podle počtu detekcí",
-            labels={"index": "Druh", "value": "Počet"},
-            color=top_species.values,
-            color_continuous_scale='Viridis'
-        )
-        # Skrytí legendy barev, pokud není potřeba
-        fig_bar.update_layout(showlegend=False)
-        st.plotly_chart(fig_bar, use_container_width=True)
-    
-    # 4. Tabulka dat
-    with st.expander("🔍 Prohlížeč detailních dat"):
-        st.write("Ukázka stažených dat (prvních 50 záznamů):")
-        st.dataframe(df_birds.head(50))
+    else:
+        st.info("V tomto časovém rozmezí nebyla nalezena žádná data.")
 
 else:
-    st.error("Žádná data nebyla načtena. Zkontrolujte API.")
+    st.info("Pro zobrazení dat prosím vyberte počáteční i koncové datum v levém menu.")
