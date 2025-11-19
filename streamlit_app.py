@@ -4,84 +4,95 @@ import requests
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import numpy as np
 
-# --- CONFIGURATION ---
-# Your specific BirdNET-Go instance
+# --- KONFIGURACE ---
+# URL vaší BirdNET-Go instance
 BIRDNET_API_URL = "https://birds.ballaty.cz/api/v2/detections" 
-# Note: If your API doesn't support a full history dump via GET, 
-# you might need to use the 'Download CSV' feature from your BirdNET-Go 
-# dashboard and upload it here, or connect to the SQLite database directly.
 
-# Coordinates for Prague (from your location)
+# Souřadnice (Praha) - pro počasí
 LATITUDE = 50.0755 
 LONGITUDE = 14.4378
 
-st.set_page_config(page_title="BirdNET Data Explorer", layout="wide")
+# Nastavení stránky
+st.set_page_config(page_title="BirdNET Analýza", layout="wide")
 
-st.title("🐦 BirdNET-Go Analysis Dashboard")
-st.markdown(f"Connected to: [{BIRDNET_API_URL}]({BIRDNET_API_URL})")
+st.title("🐦 BirdNET-Go Analytický Dashboard")
+st.markdown(f"Zdroj dat: [{BIRDNET_API_URL}]({BIRDNET_API_URL})")
 
-# --- DATA FETCHING ---
+# --- NAČÍTÁNÍ DAT ---
 
 @st.cache_data(ttl=3600)
 def get_bird_data(days=7):
     """
-    Fetches bird detection data. 
-    Tries to load from API. If that fails or returns mock data, we simulate.
+    Stáhne data o detekcích ptáků.
+    Parsuje JSON strukturu: {"data": [{"beginTime": "...", "commonName": "...", ...}]}
     """
     # ------------------------------------------------------------------
-    # ATTEMPT 1: Real API Call
+    # 1. Pokus o stažení z API
     # ------------------------------------------------------------------
     try:
-        # Many BirdNET-Go instances paginate or limit range. 
-        # We ask for a date range if the API supports it.
         params = {
             'start': (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d'),
             'end': datetime.now().strftime('%Y-%m-%d')
         }
-        # Uncomment this when ready to test connection:
-        # response = requests.get(BIRDNET_API_URL, params=params, timeout=10)
-        # if response.status_code == 200:
-        #     data = response.json()
-        #     # Handle if data is wrapped in a 'detections' key
-        #     if isinstance(data, dict) and 'detections' in data:
-        #         data = data['detections']
-        #     return pd.DataFrame(data)
+        
+        headers = {'User-Agent': 'StreamlitBirdNET/1.0'}
+        
+        # Timeout nastaven na 15 sekund
+        response = requests.get(BIRDNET_API_URL, params=params, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            json_resp = response.json()
+            
+            if isinstance(json_resp, dict) and 'data' in json_resp:
+                raw_data = json_resp['data']
+                df = pd.DataFrame(raw_data)
+                
+                # Přejmenování sloupců pro interní logiku
+                rename_map = {
+                    'beginTime': 'Timestamp',
+                    'commonName': 'CommonName',
+                    'confidence': 'Confidence'
+                }
+                df = df.rename(columns=rename_map)
+                
+                # Převod času na datetime objekt
+                if 'Timestamp' in df.columns:
+                    df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601')
+                
+                # Převod spolehlivosti na číslo
+                if 'Confidence' in df.columns:
+                    df['Confidence'] = pd.to_numeric(df['Confidence'])
+                
+                return df
+            else:
+                st.warning("API připojeno, ale v odpovědi chybí klíč 'data'.")
+        else:
+            st.warning(f"Chyba API, status kód: {response.status_code}")
+
     except Exception as e:
-        st.warning(f"Could not connect to API ({e}). Using simulated data.")
+        st.warning(f"Nelze se připojit k API ({e}). Používám simulovaná data pro ukázku.")
 
     # ------------------------------------------------------------------
-    # FALLBACK: Simulated Data (for demonstration)
+    # 2. Simulovaná data (pokud API selže)
     # ------------------------------------------------------------------
     dates = pd.date_range(end=datetime.now(), periods=days*24*2, freq='30min')
-    import numpy as np
-    
-    # Simulate that BirdNET-Go *might* pass weather data if configured
-    has_weather_integration = True 
     
     data = {
         'Timestamp': dates,
-        'CommonName': np.random.choice(['Eurasian Blackbird', 'European Robin', 'House Sparrow', 'Great Tit', 'Magpie'], size=len(dates)),
+        'CommonName': np.random.choice(['Sýkora modřinka', 'Vrabec polní', 'Kos černý', 'Sýkora koňadra', 'Strakapoud velký'], size=len(dates)),
         'Confidence': np.random.uniform(0.7, 0.99, size=len(dates)),
     }
     
-    # Add fake weather data simulating what BirdNET-Go might log
-    if has_weather_integration:
-        data['Temperature'] = np.random.uniform(10, 25, size=len(dates))
-        data['Humidity'] = np.random.uniform(40, 80, size=len(dates))
-        
     df = pd.DataFrame(data)
-    
-    if 'Timestamp' in df.columns:
-        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
-        
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
     return df
 
 @st.cache_data(ttl=3600)
 def get_historical_weather(days=7):
     """
-    Fetches historical weather from Open-Meteo as a fallback
-    if BirdNET-Go didn't save weather data.
+    Stáhne historické počasí z Open-Meteo (fallback).
     """
     url = "https://archive-api.open-meteo.com/v1/archive"
     end_date = datetime.now().date()
@@ -110,80 +121,119 @@ def get_historical_weather(days=7):
     except:
         return pd.DataFrame()
 
-# --- MAIN APP ---
+# --- HLAVNÍ APLIKACE ---
 
-days_to_analyze = st.sidebar.slider("Days to Analyze", 1, 30, 7)
+# Boční panel
+days_to_analyze = st.sidebar.slider("Počet dní k analýze", 1, 30, 7)
 
-with st.spinner('Loading detection data...'):
+with st.spinner('Načítám data o detekcích...'):
     df_birds = get_bird_data(days_to_analyze)
 
 if not df_birds.empty:
     
-    # 1. SMART WEATHER MERGE
-    # Check if we already have weather columns in the bird data
+    # 1. SLOUČENÍ S POČASÍM
     bird_cols = [c.lower() for c in df_birds.columns]
     has_internal_weather = any(x in bird_cols for x in ['temp', 'temperature', 'weather'])
     
     if has_internal_weather:
-        st.success("✅ Using Weather data found directly in BirdNET logs.")
+        st.success("✅ Používám data o počasí přímo z logů BirdNET.")
         df_analysis = df_birds.copy()
-        # Standardize column names for plotting
+        # Standardizace názvů
         col_map = {c: c for c in df_birds.columns}
         for c in df_birds.columns:
             if 'temp' in c.lower(): col_map[c] = 'Temperature_Analysis'
         df_analysis.rename(columns=col_map, inplace=True)
         
-        # Ensure we have a timestamp to group by
-        df_analysis['Hour'] = df_analysis['Timestamp'].dt.round('H')
-        
-        # Since weather is per detection, we average it per hour
+        df_analysis['Hour'] = df_analysis['Timestamp'].dt.round('h')
         df_weather_grouped = df_analysis.groupby('Hour')['Temperature_Analysis'].mean().reset_index()
         df_counts = df_analysis.groupby('Hour').size().reset_index(name='Detection Count')
         df_merged = pd.merge(df_counts, df_weather_grouped, on='Hour')
         
     else:
-        st.info("ℹ️ No weather data in BirdNET logs. Fetching from Open-Meteo...")
+        # Tento blok proběhne, pokud v JSONu není počasí (váš případ)
+        st.info("ℹ️ V logu chybí počasí. Stahuji data z Open-Meteo...")
         df_weather = get_historical_weather(days_to_analyze)
         
-        df_birds['Hour'] = df_birds['Timestamp'].dt.round('H')
-        df_counts = df_birds.groupby('Hour').size().reset_index(name='Detection Count')
+        if not df_weather.empty:
+            df_birds['Hour'] = df_birds['Timestamp'].dt.round('h')
+            df_counts = df_birds.groupby('Hour').size().reset_index(name='Detection Count')
+            
+            # Sloučení podle hodiny
+            df_merged = pd.merge(df_counts, df_weather, left_on='Hour', right_on='Timestamp', how='inner')
+            df_merged['Temperature_Analysis'] = df_merged['External_Temp']
+        else:
+            st.error("Nepodařilo se stáhnout data o počasí.")
+            df_merged = pd.DataFrame()
+
+    # --- VIZUALIZACE ---
+    
+    if not df_merged.empty:
+        # 1. Korelace (Scatter Plot)
+        st.subheader(f"🌡️ Závislost aktivity na teplotě")
         
-        # Merge
-        df_merged = pd.merge(df_counts, df_weather, left_on='Hour', right_on='Timestamp', how='inner')
-        df_merged['Temperature_Analysis'] = df_merged['External_Temp']
+        fig_corr = px.scatter(
+            df_merged, 
+            x="Temperature_Analysis", 
+            y="Detection Count",
+            hover_data=['Hour'],
+            title="Korelace: Teplota vs Počet detekcí",
+            trendline="ols", 
+            labels={
+                "Temperature_Analysis": "Teplota (°C)", 
+                "Detection Count": "Počet detekcí za hodinu"
+            }
+        )
+        st.plotly_chart(fig_corr, use_container_width=True)
 
-    # --- VISUALIZATIONS ---
+        # 2. Časová osa (Timeline)
+        st.subheader("📅 Aktivita v čase")
+        fig_timeline = go.Figure()
+        
+        # Počty ptáků
+        fig_timeline.add_trace(go.Bar(
+            x=df_merged['Hour'], 
+            y=df_merged['Detection Count'], 
+            name='Počet detekcí',
+            marker_color='#1f77b4'
+        ))
+        
+        # Čára teploty
+        fig_timeline.add_trace(go.Scatter(
+            x=df_merged['Hour'], 
+            y=df_merged['Temperature_Analysis'], 
+            name='Teplota (°C)',
+            yaxis='y2',
+            line=dict(color='#ff7f0e', width=3)
+        ))
 
-    # 1. Correlation Scatter Plot
-    st.subheader(f"🌡️ Temperature vs. Bird Activity")
+        fig_timeline.update_layout(
+            title="Detekce a teplota v průběhu času",
+            yaxis=dict(title="Počet detekcí"),
+            yaxis2=dict(title="Teplota (°C)", overlaying='y', side='right'),
+            legend=dict(x=0, y=1.1, orientation='h')
+        )
+        st.plotly_chart(fig_timeline, use_container_width=True)
+
+    # 3. Nejčastější druhy
+    st.subheader("🏆 Nejčastěji detekované druhy")
+    if 'CommonName' in df_birds.columns:
+        top_species = df_birds['CommonName'].value_counts().head(10)
+        fig_bar = px.bar(
+            top_species, 
+            orientation='h', 
+            title="Top 10 druhů podle počtu detekcí",
+            labels={"index": "Druh", "value": "Počet"},
+            color=top_species.values,
+            color_continuous_scale='Viridis'
+        )
+        # Skrytí legendy barev, pokud není potřeba
+        fig_bar.update_layout(showlegend=False)
+        st.plotly_chart(fig_bar, use_container_width=True)
     
-    fig_corr = px.scatter(
-        df_merged, 
-        x="Temperature_Analysis", 
-        y="Detection Count",
-        hover_data=['Hour'],
-        title="Correlation: Temperature vs Detections",
-        trendline="ols", # Ordinary Least Squares regression line
-        labels={"Temperature_Analysis": "Temperature (°C)", "Detection Count": "Detections per Hour"}
-    )
-    st.plotly_chart(fig_corr, use_container_width=True)
-
-    # 2. Top Species Breakdown
-    st.subheader("🏆 Top Detected Species")
-    top_species = df_birds['CommonName'].value_counts().head(10)
-    fig_bar = px.bar(
-        top_species, 
-        orientation='h', 
-        title="Top 10 Species by Count",
-        color=top_species.values,
-        color_continuous_scale='Viridis'
-    )
-    st.plotly_chart(fig_bar, use_container_width=True)
-    
-    # 3. Detailed Data
-    with st.expander("Data Inspector"):
-        st.write("Sample of raw data:")
+    # 4. Tabulka dat
+    with st.expander("🔍 Prohlížeč detailních dat"):
+        st.write("Ukázka stažených dat (prvních 50 záznamů):")
         st.dataframe(df_birds.head(50))
 
 else:
-    st.error("No data loaded.")
+    st.error("Žádná data nebyla načtena. Zkontrolujte API.")
