@@ -25,80 +25,109 @@ st.markdown(f"Zdroj dat: [{BIRDNET_API_URL}]({BIRDNET_API_URL})")
 @st.cache_data(ttl=3600)
 def get_bird_data(start_date, end_date):
     """
-    Stáhne data o detekcích ptáků pro zadaný rozsah dat.
+    Stáhne data o detekcích ptáků pro zadaný rozsah dat pomocí
+    iterativního procházení stránek (pagination) metodou OFFSET a LIMIT.
+    Tato metoda se ukázala jako funkční pro BirdNET-Go API.
     """
-    # ------------------------------------------------------------------
-    # 1. Pokus o stažení z API
-    # ------------------------------------------------------------------
+    
+    # Převedení datumů na řetězce ve formátu YYYY-MM-DD
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+    
+    # Nastavení pro stahování dat
+    all_detections = []
+    offset = 0
+    PAGE_LIMIT = 1000 # Limit detekcí na jednu stránku
+    
+    # Základní parametry pro všechny požadavky
+    params = {
+        'start': start_str,
+        'end': end_str,
+        'limit': PAGE_LIMIT 
+    }
+    
+    headers = {'User-Agent': 'StreamlitBirdNET/1.0'}
+    
+    st.info(f"Zahajuji stahování dat pro rozsah: {start_str} až {end_str} (Načítám stránku po stránce pomocí OFFSET/LIMIT {PAGE_LIMIT}).")
+    
     try:
-        # Převedení datumů na řetězce ve formátu YYYY-MM-DD
-        start_str = start_date.strftime('%Y-%m-%d')
-        end_str = end_date.strftime('%Y-%m-%d')
-        
-        params = {
-            'start': start_str,
-            'end': end_str,
-            # ZVÝŠENÍ LIMITU: API pravděpodobně omezuje výsledky na 100.
-            # Tímto parametrem zajistíme, že dostaneme více dat.
-            'limit': 10000 
-        }
-        
-        headers = {'User-Agent': 'StreamlitBirdNET/1.0'}
-        
-        st.info(f"Stahuji data z API pro rozsah: {start_str} až {end_str}")
-        
-        response = requests.get(BIRDNET_API_URL, params=params, headers=headers, timeout=15)
-        
-        if response.status_code == 200:
+        while True:
+            params["offset"] = offset # Přidáme offset k parametrům
+            
+            response = requests.get(BIRDNET_API_URL, params=params, headers=headers, timeout=15)
+                
+            if response.status_code != 200:
+                st.error(f"Chyba API na offsetu {offset}, status kód: {response.status_code}.")
+                break
+
             json_resp = response.json()
             
-            if isinstance(json_resp, dict) and 'data' in json_resp:
-                raw_data = json_resp['data']
-                
-                if not raw_data:
-                    st.warning("API je v pořádku, ale pro zvolený rozsah nevrátilo žádné detekce.")
-                    return pd.DataFrame() # Vrací prázdný DataFrame
-                
-                df = pd.DataFrame(raw_data)
-                
-                # Přejmenování sloupců pro interní logiku a přehlednost
-                rename_map = {
-                    'beginTime': 'Timestamp',
-                    'commonName': 'CommonName',
-                    'scientificName': 'ScientificName', # Nově přidáno
-                    'source': 'Source', # Nově přidáno
-                    'confidence': 'Confidence'
-                }
-                df = df.rename(columns=rename_map)
-                
-                # --- OPRAVA TIMEZONE ---
-                if 'Timestamp' in df.columns:
-                    # 1. Načíst jako UTC (protože API vrací 'Z' na konci)
-                    df['Timestamp'] = pd.to_datetime(df['Timestamp'], utc=True, errors='coerce')
-                    # 2. Převést na čas v Praze a zrušit timezónu
-                    df['Timestamp'] = df['Timestamp'].dt.tz_convert('Europe/Prague').dt.tz_localize(None)
-                
-                if 'Confidence' in df.columns:
-                    df['Confidence'] = pd.to_numeric(df['Confidence'], errors='coerce')
-                
-                return df
-            else:
-                st.error("API připojeno, ale v odpovědi chybí klíč 'data' nebo je formát neočekávaný.")
-                return pd.DataFrame()
-        else:
-            st.error(f"Chyba API, status kód: {response.status_code}. Nelze stáhnout data.")
+            # --- Zpracování dat (podpora "data" i "detections") ---
+            new_dets = []
+            if isinstance(json_resp, dict):
+                if "detections" in json_resp:
+                    new_dets = json_resp["detections"]
+                elif "data" in json_resp:
+                    new_dets = json_resp["data"]
+            
+            if not new_dets:
+                # Konec dat
+                # st.info(f"Dosažen konec dat na offsetu {offset}.")
+                break
+
+            all_detections.extend(new_dets)
+            
+            # Pokud je počet nově stažených detekcí menší než limit, je to poslední stránka.
+            if len(new_dets) < PAGE_LIMIT:
+                break
+
+            # Přesun na další offset
+            offset += PAGE_LIMIT
+            
+        # --- Zpracování všech stažených dat ---
+        
+        if not all_detections:
+            st.warning("API je v pořádku, ale pro zvolený rozsah nevrátilo žádné detekce.")
             return pd.DataFrame()
+        
+        df = pd.DataFrame(all_detections)
+        
+        st.success(f"✅ Úspěšně staženo celkem {len(df)} detekcí.")
+
+        # Přejmenování sloupců pro interní logiku a přehlednost
+        rename_map = {
+            'beginTime': 'Timestamp',
+            'commonName': 'CommonName',
+            'scientificName': 'ScientificName',
+            'source': 'Source',
+            'confidence': 'Confidence'
+        }
+        df = df.rename(columns=rename_map)
+        
+        # --- OPRAVA TIMEZONE ---
+        if 'Timestamp' in df.columns:
+            # 1. Načíst jako UTC (protože API vrací 'Z' na konci)
+            df['Timestamp'] = pd.to_datetime(df['Timestamp'], utc=True, errors='coerce')
+            # 2. Převést na čas v Praze a zrušit timezónu
+            df['Timestamp'] = df['Timestamp'].dt.tz_convert('Europe/Prague').dt.tz_localize(None)
+        
+        if 'Confidence' in df.columns:
+            df['Confidence'] = pd.to_numeric(df['Confidence'], errors='coerce')
+        
+        return df
 
     except requests.exceptions.Timeout:
         st.error("Vypršel časový limit při pokusu o připojení k API. Používám simulovaná data pro ukázku.")
+        return get_simulated_data(start_date, end_date)
         
     except requests.exceptions.RequestException as e:
         st.error(f"Chyba připojení k API ({e}). Používám simulovaná data pro ukázku.")
+        return get_simulated_data(start_date, end_date)
 
-    # ------------------------------------------------------------------
-    # 2. Simulovaná data (Fallback)
-    # ------------------------------------------------------------------
-    # Používáme simulovaná data jen jako poslední záchranu, pokud API selže.
+def get_simulated_data(start_date, end_date):
+    """
+    Generuje simulovaná data (Fallback)
+    """
     delta = end_date - start_date
     days = delta.days + 1
     dates = pd.date_range(start=start_date, periods=days*24*2, freq='30min')
