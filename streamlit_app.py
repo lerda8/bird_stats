@@ -212,13 +212,17 @@ if isinstance(date_range, tuple) and len(date_range) == 2:
                 title="Vývoj v čase: Detekce vs. Teplota",
                 xaxis=dict(title="Čas"),
                 yaxis=dict(
-                    title="Počet detekcí",
-                    titlefont=dict(color="#1f77b4"),
+                    title=dict(
+                        text="Počet detekcí",
+                        font=dict(color="#1f77b4")
+                    ),
                     tickfont=dict(color="#1f77b4")
                 ),
                 yaxis2=dict(
-                    title="Teplota (°C)",
-                    titlefont=dict(color="firebrick"),
+                    title=dict(
+                        text="Teplota (°C)",
+                        font=dict(color="firebrick")
+                    ),
                     tickfont=dict(color="firebrick"),
                     overlaying='y',
                     side='right'
